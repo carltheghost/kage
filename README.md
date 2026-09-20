@@ -2,7 +2,7 @@
 
 An interactive five-chapter night walk through a Kyoto mountain temple, rendered live in Three.js and layered with cinematic generated imagery.
 
-[**View the live project**](https://mengto.github.io/kage/) · [**View the source**](https://github.com/MengTo/kage) · [**Read the build prompt**](PROMPT.md)
+[**View the source**](https://github.com/carltheghost/kage) · [**Read the build prompt**](PROMPT.md) · [original by MengTo](https://github.com/MengTo/kage) ([live](https://mengto.github.io/kage/))
 
 ![Kage preview](assets/kage-preview.webp)
 
@@ -42,6 +42,7 @@ kage/
 ├── index.html
 ├── PROMPT.md
 ├── README.md
+├── .nojekyll
 ├── assets/
 │   └── kage-preview.webp
 └── secret-pathways-assets/
