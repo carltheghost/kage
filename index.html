@@ -4233,6 +4233,29 @@ function splitHeadingWords() {
   });
 }
 
+function cancelStageRetirement(timers, stage, cancelTimer = clearTimeout) {
+  const timer = timers.get(stage);
+  if (timer === undefined) return false;
+  cancelTimer(timer);
+  timers.delete(stage);
+  return true;
+}
+
+function finishStageRetirement(timers, stage, timer, activeStage, park) {
+  if (timers.get(stage) !== timer) return false;
+  timers.delete(stage);
+  stage.classList.remove('fg-retiring');
+  if (stage !== activeStage) park(stage);
+  return true;
+}
+
+function settleStageRetirements(timers, activeStage, park, cancelTimer = clearTimeout) {
+  timers.forEach((timer, stage) => {
+    cancelTimer(timer);
+    finishStageRetirement(timers, stage, timer, activeStage, park);
+  });
+}
+
 /* Foreground PNGs are section-owned until their chapter is called. At that
    point the active stage becomes a fixed lower viewport plane; its predecessor
    remains there just long enough to blur and fade out before returning home.
@@ -4269,22 +4292,17 @@ function wireForegroundStages() {
 
   const retire = stage => {
     if (!stage || stage === activeStage) return;
-    const pending = timers.get(stage);
-    if (pending) clearTimeout(pending);
+    cancelStageRetirement(timers, stage);
     stage.classList.remove('fg-active');
     if (REDUCE) { park(stage); return; }
     stage.classList.add('fg-retiring');
-    timers.set(stage, setTimeout(() => {
-      stage.classList.remove('fg-retiring');
-      timers.delete(stage);
-      park(stage);
-    }, 820));
+    const timer = setTimeout(() => finishStageRetirement(timers, stage, timer, activeStage, park), 820);
+    timers.set(stage, timer);
   };
 
   const activate = stage => {
     if (!stage || stage === activeStage) return;
-    const pending = timers.get(stage);
-    if (pending) clearTimeout(pending);
+    cancelStageRetirement(timers, stage);
     stage.classList.remove('fg-retiring');
     lift(stage);
     stage.classList.add('fg-active');
@@ -4295,12 +4313,7 @@ function wireForegroundStages() {
 
   onReducedMotionChange(reduced => {
     if (!reduced) return;
-    timers.forEach((timer, stage) => {
-      clearTimeout(timer);
-      stage.classList.remove('fg-retiring');
-      park(stage);
-    });
-    timers.clear();
+    settleStageRetirements(timers, activeStage, park);
   });
 
   const observer = new IntersectionObserver(entries => {
