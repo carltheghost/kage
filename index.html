@@ -4674,7 +4674,7 @@ function render() {
 function frame(now) {
   if (!running) return;
   const raw = (now - tPrev) / 1000 || 0;
-  const dt = Math.min(raw, .05);              /* animation never jumps … */
+  const dt = frameDelta(raw, REDUCE);          /* reduced-motion mode is a still scene */
   tPrev = now; clock += dt;
   fadeIn = INTRO.t0 ? sat((now - INTRO.t0) / 700) : 1;
 
@@ -4703,6 +4703,10 @@ function frame(now) {
 }
 const TIMER = qs('driver', 'raf') === 'timer';
 function queue() { TIMER ? setTimeout(() => frame(performance.now()), 16) : requestAnimationFrame(frame); }
+
+/* Freeze every time-based layer when motion reduction is requested. Scroll
+   still selects a camera position directly through RIG.smooth below. */
+function frameDelta(raw, reducedMotion) { return reducedMotion ? 0 : Math.min(raw, .05); }
 
 /* ======================================================== 14 · booting */
 const JOBS = [

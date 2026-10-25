@@ -32,6 +32,7 @@ m = re.search(r'<script>\n(.*)</script>', h, re.S)
 open('/tmp/kage-inline-check.js', 'w', encoding='utf-8').write(m.group(1))
 EOF
 node --check /tmp/kage-inline-check.js || fail=1
+node scripts/test-reduced-motion.js || fail=1
 
 if [ "$fail" = 0 ]; then
   echo "kage check: OK"
