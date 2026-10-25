@@ -1221,7 +1221,24 @@ body[data-layout-footer="b"] .foot-base span:last-child{ text-align:right; }
 const Q      = new URLSearchParams(location.search);
 const qs     = (k, d) => { const v = Q.get(k); return v === null ? d : v; };
 const qn     = (k, d) => { const v = Q.get(k); return v === null ? d : parseFloat(v); };
-const REDUCE = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const REDUCE_MEDIA = matchMedia('(prefers-reduced-motion: reduce)');
+let REDUCE = REDUCE_MEDIA.matches;
+const REDUCE_MOTION_OWNERS = new Set();
+function watchReducedMotion(query, onChange) {
+  const listener = event => onChange(!!event.matches);
+  if (typeof query.addEventListener === 'function') {
+    query.addEventListener('change', listener);
+    return () => query.removeEventListener('change', listener);
+  }
+  query.addListener(listener);
+  return () => query.removeListener(listener);
+}
+function onReducedMotionChange(listener) { REDUCE_MOTION_OWNERS.add(listener); }
+watchReducedMotion(REDUCE_MEDIA, reduced => {
+  if (REDUCE === reduced) return;
+  REDUCE = reduced;
+  REDUCE_MOTION_OWNERS.forEach(listener => listener(reduced));
+});
 const COARSE = matchMedia('(hover: none)').matches;
 
 const clamp  = (v, a, b) => v < a ? a : (v > b ? b : v);
@@ -2277,7 +2294,7 @@ const DPR_CAP      = qn('dpr', LOW ? 1.4 : 1.8);
 /* the renderer trades resolution for frame rate on its own — the scene is
    fill-bound (five big alpha-blended veils plus a bloom chain), so pixels
    are the only knob worth turning on unknown hardware */
-const PERF = { scale: 1, acc: 0, n: 0, locked: qs('adapt', '1') === '0' };
+const PERF = { scale: 1, acc: 0, n: 0, elapsed: 0, locked: qs('adapt', '1') === '0' };
 
 function initGL() {
   if (qs('nogl', '0') !== '0' || !window.THREE) throw new Error('webgl disabled');
@@ -3773,7 +3790,8 @@ function createCloth(output, plate, options) {
     gl.bindVertexArray(null);
   }
 
-  let raf = 0, last = performance.now(), debt = 0, running = false, visible = false, dead = false;
+  let raf = 0, last = performance.now(), debt = 0, frames = 0;
+  let running = false, visible = false, dead = false;
   function frame(now) {
     if (dead) return;
     if (!visible) { running = false; return; }
@@ -3798,6 +3816,7 @@ function createCloth(output, plate, options) {
     }
     compose(width, height);
     draw();
+    frames++;
     if (REDUCE || (config.wind <= .001 && energy < .004 && touch.s < .01)) { running = false; return; }
     raf = requestAnimationFrame(frame);
   }
@@ -3805,6 +3824,12 @@ function createCloth(output, plate, options) {
     if (dead || running || !visible) return;
     running = true; last = performance.now(); raf = requestAnimationFrame(frame);
   }
+  onReducedMotionChange(reduced => {
+    if (reduced) {
+      running = false;
+      cancelAnimationFrame(raf);
+    } else start();
+  });
 
   const ro = new ResizeObserver(() => { syncSize(); upload(); start(); });
   ro.observe(output);
@@ -3827,7 +3852,8 @@ function createCloth(output, plate, options) {
 
   syncSize(); upload(); compose(Math.max(wrapper.clientWidth, 1), Math.max(wrapper.clientHeight, 1));
   return { refresh(){ syncSize(); upload(); start(); }, wake: start,
-           setEdge(v){ edgeTo = v; start(); } };
+           setEdge(v){ edgeTo = v; start(); },
+           get running(){ return running; }, get frames(){ return frames; } };
 }
 
 /* the plate: the card's own still, cover-cropped, carrying the two scrims the
@@ -3869,6 +3895,7 @@ function buildCardCloth() {
         cornerRadius: 20, perspective: 1200, pin: 'top' });
       /* only hide the card's own painting once the fabric is really carrying it */
       if (!inst) { out.remove(); return; }
+      CLOTHES.push(inst);
       fr.classList.add('on-cloth');
       const card = fr.closest('.card') || fr;
       card.addEventListener('pointerenter', () => inst.setEdge(.185), { passive: true });
@@ -4150,6 +4177,8 @@ const nav = $('#nav'), preEl = $('#pre'), preFill = $('#pre-fill'), prePct = $('
 
 function wireReveals() {
   splitHeadingWords();
+  const pending = new Map();
+  const reveal = el => { pending.delete(el); el.classList.add('rv-in'); };
   const groups = new Map();
   const items = $$('[data-rv], .mask-line');
   items.forEach(el => {
@@ -4162,10 +4191,16 @@ function wireReveals() {
       if (!e.isIntersecting) return;
       io.unobserve(e.target);
       const d = parseFloat(e.target.dataset.rvd || 0);
-      setTimeout(() => e.target.classList.add('rv-in'), REDUCE ? 0 : d);
+      const timer = setTimeout(() => reveal(e.target), REDUCE ? 0 : d);
+      pending.set(e.target, timer);
     });
   }, { rootMargin: '0px 0px -10% 0px', threshold: .04 });
   items.forEach(el => { if (!el.closest('#hero')) io.observe(el); });
+  onReducedMotionChange(reduced => {
+    if (!reduced) return;
+    pending.forEach((timer, el) => { clearTimeout(timer); el.classList.add('rv-in'); });
+    pending.clear();
+  });
 }
 
 /* Word-level masks let every display heading arrive at a human reading pace.
@@ -4216,7 +4251,7 @@ function wireForegroundStages() {
   const sky = $('#fg-sky');
   const ratios = new Map(pairs.map(pair => [pair.section, 0]));
   const homes = new WeakMap(pairs.map(pair => [pair.stage, pair.section]));
-  const timers = new WeakMap();
+  const timers = new Map();
   let activeStage = null;
 
   const lift = stage => {
@@ -4257,6 +4292,16 @@ function wireForegroundStages() {
     activeStage = stage;
     retire(prior);
   };
+
+  onReducedMotionChange(reduced => {
+    if (!reduced) return;
+    timers.forEach((timer, stage) => {
+      clearTimeout(timer);
+      stage.classList.remove('fg-retiring');
+      park(stage);
+    });
+    timers.clear();
+  });
 
   const observer = new IntersectionObserver(entries => {
     entries.forEach(entry => ratios.set(entry.target, entry.isIntersecting ? entry.intersectionRatio : 0));
@@ -4414,20 +4459,37 @@ function wireCursor() {
   const dot = $('#cursor');
   if (COARSE) { dot.style.display = 'none'; return; }
   let x = vpW() / 2, y = vpH() / 2, tx2 = x, ty = y;
+  let raf = 0, running = false;
+  const paint = () => { dot.style.transform = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,0)'; };
+  const tick = () => {
+    if (REDUCE) { running = false; return; }
+    x = lerp(x, tx2, .18); y = lerp(y, ty, .18);
+    paint();
+    raf = requestAnimationFrame(tick);
+  };
+  const start = () => {
+    if (REDUCE || running) return;
+    running = true;
+    raf = requestAnimationFrame(tick);
+  };
   addEventListener('pointermove', e => {
     tx2 = e.clientX; ty = e.clientY;
     RIG.tmx = (e.clientX / vpW()) * 2 - 1;
     RIG.tmy = -((e.clientY / vpH()) * 2 - 1);
+    if (REDUCE) { x = tx2; y = ty; paint(); } else start();
   }, { passive: true });
   $$('[data-cursor]').forEach(el => {
     el.addEventListener('mouseenter', () => dot.classList.add('act'));
     el.addEventListener('mouseleave', () => dot.classList.remove('act'));
   });
-  (function tick() {
-    x = lerp(x, tx2, .18); y = lerp(y, ty, .18);
-    dot.style.transform = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,0)';
-    requestAnimationFrame(tick);
-  })();
+  onReducedMotionChange(reduced => {
+    if (reduced) {
+      cancelAnimationFrame(raf);
+      running = false;
+      x = tx2; y = ty; paint();
+    } else start();
+  });
+  start();
 }
 
 function makeGrain() {
@@ -4443,6 +4505,7 @@ function makeGrain() {
 
 /* ============================================ 12 · the card viewports */
 const CARDS = [];
+const CLOTHES = [];
 function buildCards() {
   const defs = [
     { p: [-2.0, 1.60, -2.0], t: [0, 10.0, -34.0], fov: 40 },    /* the long climb */
@@ -4570,7 +4633,7 @@ function renderCards(rt) {
 
 /* ==================================================== 13 · the machine */
 let running = false, tPrev = 0, clock = 0, fadeIn = 0;
-const INTRO = { t0: 0 };
+const INTRO = { time: 0 };
 
 function resize() {
   const w = vpW(), h = vpH();
@@ -4674,11 +4737,12 @@ function render() {
 function frame(now) {
   if (!running) return;
   const raw = (now - tPrev) / 1000 || 0;
-  const dt = frameDelta(raw, REDUCE);          /* reduced-motion mode is a still scene */
-  tPrev = now; clock += dt;
-  fadeIn = INTRO.t0 ? sat((now - INTRO.t0) / 700) : 1;
+  const dt = frameDelta(raw, REDUCE);           /* reduced motion freezes scene time */
+  tPrev = now; clock += dt; PERF.elapsed = frameElapsed(raw, PERF.elapsed);
+  INTRO.time = Math.min(INTRO.time + dt, 4);
+  fadeIn = sat(INTRO.time / .7);
 
-  if (!PERF.locked && clock > 2.2) {
+  if (!PERF.locked && PERF.elapsed > 2.2) {
     PERF.acc += raw; PERF.n++;      /* … but the governor reads the truth */
     if (PERF.n >= 40 || PERF.acc > .9) {
       const avg = PERF.acc / PERF.n; PERF.acc = 0; PERF.n = 0;
@@ -4690,11 +4754,8 @@ function frame(now) {
   RIG.smooth = REDUCE ? RIG.prog : damp(RIG.smooth, RIG.prog, 5.2, dt);
   RIG.mx = damp(RIG.mx, RIG.tmx, 2.6, dt);
   RIG.my = damp(RIG.my, RIG.tmy, 2.6, dt);
-  if (INTRO.t0) {
-    const el = (now - INTRO.t0) / 1000;
-    RIG.intro = sat(el / 2.4);
-    WORD.reveal = Math.min(1.2, el / 1.5);
-  }
+  RIG.intro = sat(INTRO.time / 2.4);
+  WORD.reveal = Math.min(1.2, INTRO.time / 1.5);
 
   applyCamera();
   updateWorld(dt);
@@ -4704,9 +4765,10 @@ function frame(now) {
 const TIMER = qs('driver', 'raf') === 'timer';
 function queue() { TIMER ? setTimeout(() => frame(performance.now()), 16) : requestAnimationFrame(frame); }
 
-/* Freeze every time-based layer when motion reduction is requested. Scroll
-   still selects a camera position directly through RIG.smooth below. */
-function frameDelta(raw, reducedMotion) { return reducedMotion ? 0 : Math.min(raw, .05); }
+/* Reduced motion pauses scene time but the independent elapsed clock continues
+   so the resolution governor can still measure render cost. */
+function frameDelta(raw, reducedMotion) { return reducedMotion ? 0 : Math.min(Math.max(raw, 0), .05); }
+function frameElapsed(raw, elapsed) { return elapsed + Math.max(raw, 0); }
 
 /* ======================================================== 14 · booting */
 const JOBS = [
@@ -4791,17 +4853,22 @@ function fallback(err) {
 }
 
 function start() {
+  onReducedMotionChange(() => { tPrev = performance.now(); });
   addEventListener('resize', () => { resize(); }, { passive: true });
   addEventListener('orientationchange', () => setTimeout(resize, 250));
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { running = false; }
-    else if (!running) { running = true; tPrev = performance.now(); queue(); }
+    else if (!running) {
+      tPrev = performance.now();
+      running = true; queue();
+    }
   });
   resize();
 
   const shot = Q.get('shot');
+  INTRO.time = shot !== null || REDUCE ? 4 : 0;
   if (shot !== null) {                       /* deterministic states for review */
-    RIG.intro = 1; WORD.reveal = 1.2; fadeIn = 1; INTRO.t0 = 0;
+    RIG.intro = 1; WORD.reveal = 1.2; fadeIn = 1;
     const n = clamp(parseInt(shot, 10) || 0, 0, SECS.length - 1);
     scrollTo(0, anchors[n]);
     RIG.smooth = RIG.prog = progressFor(anchors[n]);
@@ -4809,6 +4876,7 @@ function start() {
     document.body.classList.remove('is-locked');
     preEl.classList.add('done');
   } else {
+    if (REDUCE) { RIG.intro = 1; WORD.reveal = 1.2; fadeIn = 1; }
     preEl.classList.add('done');
     setTimeout(() => {
       document.body.classList.remove('is-locked');
@@ -4817,9 +4885,12 @@ function start() {
     }, REDUCE ? 0 : 340);
   }
   running = true; tPrev = performance.now();
-  INTRO.t0 = shot !== null ? 0 : (REDUCE ? performance.now() - 4000 : performance.now());
   queue();
-  window.__kage = window.__secret = { RIG: RIG, WORLD: WORLD, WORD: WORD, CAM: CAM, POST: POST, renderer: renderer, scene: scene, camera: camera, anchors: () => anchors };
+  window.__kage = window.__secret = {
+    RIG: RIG, WORLD: WORLD, WORD: WORD, CAM: CAM, POST: POST,
+    PERF: PERF, clothes: CLOTHES, renderer: renderer, scene: scene, camera: camera,
+    get reducedMotion() { return REDUCE; }, anchors: () => anchors
+  };
 }
 
 if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(boot, 0);
